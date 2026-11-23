@@ -306,7 +306,7 @@
                 </div>
               </div>`).join('')}
           </div>
-          <label>コメント（任意）<input name="comment" maxlength="300" value="${esc(mine?.comment || '')}" placeholder="例: 土曜は午後なら行けます"></label>
+          <label>コメント（任意）<input name="comment" maxlength="300" value="${esc(mine?.comment || '')}"></label>
           <p class="hint">同じ名前で回答すると上書きされます。</p>
           <p class="error" id="poll-answer-error" hidden></p>
           <div class="actions"><button type="submit">${mine ? '回答を更新' : '回答する'}</button></div>
