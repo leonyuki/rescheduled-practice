@@ -210,8 +210,6 @@ dialog h2 { margin-top: 0; font-size: 1.15rem; }
   font-size: 0.9rem;
   overflow-wrap: anywhere;
 }
-.site-footer { text-align: center; padding: 24px 16px 32px; font-size: 0.85rem; }
-.site-footer a { color: var(--muted); }
 
 .toast {
   position: fixed;

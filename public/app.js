@@ -167,7 +167,6 @@
         <div class="meta"><span>${esc(formatDate(p))}</span>${p.location ? `<span>${esc(p.location)}</span>` : ''}</div>
         ${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}
         ${countPills(p)}
-        ${isAdmin ? '<div class="actions top-gap"><a class="button secondary small" href="#/admin">管理者メニューで編集</a></div>' : ''}
       </div>
       ${responseForm}
       <div class="card">
@@ -337,7 +336,6 @@
         ${poll.location ? `<div class="meta"><span>${esc(poll.location)}</span></div>` : ''}
         ${poll.note ? `<div class="note">${esc(poll.note)}</div>` : ''}
         ${decided ? `<p class="decided-note">決定: <strong>${esc(candidateLabel(decided))}</strong>${poll.practiceId ? ` <a href="#/p/${encodeURIComponent(poll.practiceId)}">練習ページへ →</a>` : ''}</p>` : ''}
-        ${isAdmin ? '<div class="actions top-gap"><a class="button secondary small" href="#/admin">管理者メニューで編集</a></div>' : ''}
       </div>
       <div class="card">
         <h2 class="card-heading">候補日と集計</h2>
