@@ -22,6 +22,22 @@
     del(k, area = localStorage) { try { area.removeItem(k); } catch { /* ignore */ } },
   };
 
+  // ---------- 管理者セッション（このタブを閉じるまで有効） ----------
+  const admin = {
+    password: () => storage.get('adminPassword', sessionStorage),
+    loggedIn: () => storage.get('adminMode', sessionStorage) === '1',
+    login(pw = '') {
+      storage.set('adminMode', '1', sessionStorage);
+      if (pw) storage.set('adminPassword', pw, sessionStorage);
+      updateNav();
+    },
+    logout() {
+      storage.del('adminMode', sessionStorage);
+      storage.del('adminPassword', sessionStorage);
+      updateNav();
+    },
+  };
+
   function formatDate(p) {
     const [y, m, d] = p.date.split('-').map(Number);
     const wd = WEEKDAYS[new Date(y, m - 1, d).getDay()];
@@ -54,37 +70,32 @@
     setTimeout(() => el.remove(), 2500);
   }
 
-  async function api(path, { method = 'GET', body, admin = false } = {}) {
+  async function api(path, { method = 'GET', body, asAdmin = false, password } = {}) {
     const headers = {};
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    if (admin && adminRequired) {
-      let pw = storage.get('adminPassword', sessionStorage);
-      if (!pw) {
-        pw = prompt('管理者パスワードを入力してください') || '';
-        if (!pw) throw new Error('キャンセルしました');
-      }
-      headers['X-Admin-Password'] = pw;
-      const res = await fetch(path, { method, headers, body: body && JSON.stringify(body) });
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 401) {
-        storage.del('adminPassword', sessionStorage);
-        throw new Error(data.error || 'パスワードが違います');
-      }
-      storage.set('adminPassword', pw, sessionStorage);
-      if (!res.ok) throw new Error(data.error || `エラー (${res.status})`);
-      return data;
-    }
-    const res = await fetch(path, { method, headers, body: body && JSON.stringify(body) });
+    if (asAdmin) headers['X-Admin-Password'] = password ?? admin.password();
+    const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
+    if (res.status === 401 && asAdmin && password === undefined) {
+      // パスワードが変わった等でセッションが無効になった
+      admin.logout();
+      location.hash = '#/admin';
+      throw new Error('もう一度ログインしてください');
+    }
     if (!res.ok) throw new Error(data.error || `エラー (${res.status})`);
     return data;
   }
 
-  // ---------- views ----------
+  // ---------- navigation ----------
+  function updateNav() {
+    document.querySelector('[data-tab="admin"]').hidden = !admin.loggedIn();
+  }
+
   function setTab(name) {
     document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('active', a.dataset.tab === name));
   }
 
+  // ---------- member views ----------
   function practiceCard(p) {
     const meta = [formatDate(p), p.location].filter(Boolean).map((s) => `<span>${esc(s)}</span>`).join('');
     return `<a class="card practice-link" href="#/p/${encodeURIComponent(p.id)}">
@@ -101,12 +112,11 @@
     const head = archived
       ? `<div class="toolbar"><h1>アーカイブ（過去の練習）</h1></div>
          <p class="hint">終了日時を過ぎた練習は自動でここに移動します。</p>`
-      : `<div class="toolbar"><h1>予定の練習</h1><button id="add-btn">＋ 練習を追加</button></div>`;
+      : `<div class="toolbar"><h1>予定の練習</h1></div>`;
     const body = practices.length
       ? practices.map(practiceCard).join('')
       : `<p class="empty">${archived ? 'アーカイブされた練習はまだありません' : '予定されている練習はありません'}</p>`;
     app.innerHTML = head + body;
-    document.getElementById('add-btn')?.addEventListener('click', () => openDialog());
   }
 
   async function renderDetail(id) {
@@ -119,6 +129,7 @@
       return;
     }
     const p = practice;
+    const isAdmin = admin.loggedIn();
     setTab(p.archived ? 'archive' : 'upcoming');
     const myName = storage.get('name');
     const mine = p.responses.find((r) => r.name.toLowerCase() === myName.toLowerCase());
@@ -129,7 +140,7 @@
       .map((r) => `<li class="response">
         <span class="pill ${r.status}">${STATUS_LABEL[r.status]}</span>
         <span class="response-name">${esc(r.name)}</span>
-        ${p.archived ? '' : `<button class="small danger" data-del-response="${esc(r.id)}" aria-label="${esc(r.name)}の回答を削除">削除</button>`}
+        ${isAdmin ? `<button class="small danger" data-del-response="${esc(r.id)}" aria-label="${esc(r.name)}の回答を削除">削除</button>` : '<span></span>'}
         ${r.comment ? `<p class="response-comment">${esc(r.comment)}</p>` : ''}
       </li>`)
       .join('');
@@ -137,7 +148,7 @@
     const responseForm = p.archived
       ? `<p class="hint">この練習はアーカイブ済みのため、出欠の回答は締め切られています。</p>`
       : `<form id="response-form" class="card">
-          <h2 style="margin-top:0;font-size:1.05rem">出欠を回答</h2>
+          <h2 class="card-heading">出欠を回答</h2>
           <label>名前<input name="name" required maxlength="50" value="${esc(mine?.name || myName)}" autocomplete="name"></label>
           <div class="status-choice" role="radiogroup" aria-label="出欠">
             ${['yes', 'maybe', 'no'].map((s) => `<label><input type="radio" name="status" value="${s}" ${(mine?.status || 'yes') === s ? 'checked' : ''}><span>${STATUS_LABEL[s]}</span></label>`).join('')}
@@ -152,30 +163,22 @@
       <a class="back" href="${p.archived ? '#/archive' : '#/'}">← ${p.archived ? 'アーカイブ' : '予定の練習'}へ</a>
       <div class="card">
         ${p.archived ? `<span class="pill archived">${p.autoArchived ? '自動アーカイブ済み' : 'アーカイブ済み'}</span>` : ''}
-        <h1 class="practice-title" style="font-size:1.3rem">${esc(p.title)}</h1>
+        <h1 class="practice-title detail-title">${esc(p.title)}</h1>
         <div class="meta"><span>${esc(formatDate(p))}</span>${p.location ? `<span>${esc(p.location)}</span>` : ''}</div>
         ${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}
         ${countPills(p)}
-        <div class="actions" style="margin-top:12px">
-          ${p.archived
-            ? '<button class="small secondary" id="unarchive-btn">予定に戻す</button>'
-            : '<button class="small secondary" id="edit-btn">編集</button><button class="small secondary" id="archive-btn">アーカイブ</button>'}
-          <button class="small danger" id="delete-btn">削除</button>
-        </div>
+        ${isAdmin ? '<div class="actions top-gap"><a class="button secondary small" href="#/admin">管理者メニューで編集</a></div>' : ''}
       </div>
       ${responseForm}
       <div class="card">
-        <h2 style="margin-top:0;font-size:1.05rem">回答一覧（${p.responses.length}人）</h2>
-        ${p.responses.length
-          ? `<ul class="responses">${rows}</ul>`
-          : '<p class="hint">まだ回答がありません</p>'}
+        <h2 class="card-heading">回答一覧（${p.responses.length}人）</h2>
+        ${p.responses.length ? `<ul class="responses">${rows}</ul>` : '<p class="hint">まだ回答がありません</p>'}
       </div>`;
 
     const responseFormEl = document.getElementById('response-form');
     responseFormEl?.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const fd = new FormData(responseFormEl);
-      const body = Object.fromEntries(fd.entries());
+      const body = Object.fromEntries(new FormData(responseFormEl).entries());
       const errEl = document.getElementById('response-error');
       try {
         await api(`/api/practices/${encodeURIComponent(p.id)}/responses`, { method: 'POST', body });
@@ -192,26 +195,119 @@
       btn.addEventListener('click', async () => {
         if (!confirm('この回答を削除しますか？')) return;
         try {
-          await api(`/api/practices/${encodeURIComponent(p.id)}/responses/${encodeURIComponent(btn.dataset.delResponse)}`, { method: 'DELETE' });
+          await api(`/api/practices/${encodeURIComponent(p.id)}/responses/${encodeURIComponent(btn.dataset.delResponse)}`, { method: 'DELETE', asAdmin: true });
           renderDetail(p.id);
         } catch (err) { toast(err.message); }
       }));
+  }
 
-    document.getElementById('edit-btn')?.addEventListener('click', () => openDialog(p));
+  // ---------- admin views ----------
+  function renderLogin() {
+    setTab('admin');
+    app.innerHTML = `
+      <div class="toolbar"><h1>管理者メニュー</h1></div>
+      <form id="login-form" class="card narrow">
+        <h2 class="card-heading">ログイン</h2>
+        <label>管理者パスワード<input name="password" type="password" required autocomplete="current-password"></label>
+        <p class="error" id="login-error" hidden></p>
+        <div class="actions"><button type="submit">ログイン</button></div>
+      </form>`;
+    const f = document.getElementById('login-form');
+    f.elements.password.focus();
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pw = f.elements.password.value;
+      try {
+        await api('/api/admin/check', { method: 'POST', asAdmin: true, password: pw });
+        admin.login(pw);
+        toast('ログインしました');
+        renderAdmin();
+      } catch {
+        const el = document.getElementById('login-error');
+        el.textContent = 'パスワードが違います';
+        el.hidden = false;
+      }
+    });
+  }
 
-    const adminAction = (btnId, path, method, confirmMsg, after) => {
-      document.getElementById(btnId)?.addEventListener('click', async () => {
-        if (confirmMsg && !confirm(confirmMsg)) return;
+  function adminRow(p) {
+    const meta = [formatDate(p), p.location].filter(Boolean).map((s) => `<span>${esc(s)}</span>`).join('');
+    const id = esc(p.id);
+    return `<div class="card admin-row">
+      <a class="practice-title" href="#/p/${encodeURIComponent(p.id)}">${esc(p.title)}</a>
+      <div class="meta">${meta}</div>
+      ${countPills(p)}
+      <div class="actions top-gap">
+        <button class="small secondary" data-act="edit" data-id="${id}">編集</button>
+        ${p.archived
+          ? `<button class="small secondary" data-act="unarchive" data-id="${id}">予定に戻す</button>`
+          : `<button class="small secondary" data-act="archive" data-id="${id}">アーカイブ</button>`}
+        <button class="small danger" data-act="delete" data-id="${id}">削除</button>
+      </div>
+    </div>`;
+  }
+
+  async function renderAdmin() {
+    if (adminRequired && !admin.password()) {
+      admin.logout();
+      return renderLogin();
+    }
+    if (!adminRequired) admin.login();
+    setTab('admin');
+    app.innerHTML = '<p class="empty">読み込み中…</p>';
+    const [{ practices: upcoming }, { practices: archived }] = await Promise.all([
+      api('/api/practices?archived=false'),
+      api('/api/practices?archived=true'),
+    ]);
+    const byId = new Map([...upcoming, ...archived].map((p) => [p.id, p]));
+
+    app.innerHTML = `
+      <div class="toolbar">
+        <h1>管理者メニュー</h1>
+        <div class="actions">
+          <button id="add-btn">＋ 練習を追加</button>
+          ${adminRequired ? '<button class="secondary" id="logout-btn">ログアウト</button>' : ''}
+        </div>
+      </div>
+      ${adminRequired ? '' : '<p class="warning">管理者パスワードが設定されていないため、誰でもこのメニューを使えます。環境変数 <code>ADMIN_PASSWORD</code> を設定してください。</p>'}
+      <h2 class="section-heading">予定の練習（${upcoming.length}件）</h2>
+      ${upcoming.length ? upcoming.map(adminRow).join('') : '<p class="empty">予定されている練習はありません</p>'}
+      <h2 class="section-heading">アーカイブ（${archived.length}件）</h2>
+      ${archived.length ? archived.map(adminRow).join('') : '<p class="empty">アーカイブされた練習はまだありません</p>'}`;
+
+    document.getElementById('add-btn').addEventListener('click', () => openDialog());
+    document.getElementById('logout-btn')?.addEventListener('click', () => {
+      admin.logout();
+      toast('ログアウトしました');
+      location.hash = '#/';
+    });
+
+    app.querySelectorAll('[data-act]').forEach((btn) =>
+      btn.addEventListener('click', async () => {
+        const p = byId.get(btn.dataset.id);
+        const base = `/api/practices/${encodeURIComponent(p.id)}`;
         try {
-          await api(path, { method, admin: true });
-          after();
+          switch (btn.dataset.act) {
+            case 'edit':
+              return openDialog(p);
+            case 'archive':
+              if (!confirm(`「${p.title}」をアーカイブしますか？`)) return;
+              await api(`${base}/archive`, { method: 'POST', asAdmin: true });
+              toast('アーカイブしました');
+              break;
+            case 'unarchive':
+              await api(`${base}/unarchive`, { method: 'POST', asAdmin: true });
+              toast('予定に戻しました');
+              break;
+            case 'delete':
+              if (!confirm(`「${p.title}」を削除しますか？（回答も含めて元に戻せません）`)) return;
+              await api(base, { method: 'DELETE', asAdmin: true });
+              toast('削除しました');
+              break;
+          }
+          renderAdmin();
         } catch (err) { toast(err.message); }
-      });
-    };
-    const base = `/api/practices/${encodeURIComponent(p.id)}`;
-    adminAction('archive-btn', `${base}/archive`, 'POST', 'この練習をアーカイブしますか？', () => { toast('アーカイブしました'); renderDetail(p.id); });
-    adminAction('unarchive-btn', `${base}/unarchive`, 'POST', null, () => { toast('予定に戻しました'); renderDetail(p.id); });
-    adminAction('delete-btn', base, 'DELETE', 'この練習を削除しますか？（元に戻せません）', () => { toast('削除しました'); location.hash = p.archived ? '#/archive' : '#/'; });
+      }));
   }
 
   // ---------- dialog ----------
@@ -237,13 +333,11 @@
     const body = Object.fromEntries(new FormData(form).entries());
     try {
       const { practice } = editingId
-        ? await api(`/api/practices/${encodeURIComponent(editingId)}`, { method: 'PUT', body, admin: true })
-        : await api('/api/practices', { method: 'POST', body, admin: true });
+        ? await api(`/api/practices/${encodeURIComponent(editingId)}`, { method: 'PUT', body, asAdmin: true })
+        : await api('/api/practices', { method: 'POST', body, asAdmin: true });
       dialog.close();
-      if (practice.archived) toast('終了日時を過ぎているため、アーカイブに保存しました');
-      else toast('保存しました');
-      const target = `#/p/${encodeURIComponent(practice.id)}`;
-      if (location.hash === target) route(); else location.hash = target;
+      toast(practice.archived ? '終了日時を過ぎているため、アーカイブに保存しました' : '保存しました');
+      renderAdmin();
     } catch (err) {
       formError.textContent = err.message;
       formError.hidden = false;
@@ -256,6 +350,7 @@
     try {
       const m = hash.match(/^#\/p\/(.+)$/);
       if (m) return await renderDetail(decodeURIComponent(m[1]));
+      if (hash === '#/admin') return await renderAdmin();
       if (hash === '#/archive') return await renderList(true);
       return await renderList(false);
     } catch (err) {
@@ -268,5 +363,5 @@
   api('/api/config')
     .then((c) => { adminRequired = c.adminRequired; })
     .catch(() => {})
-    .finally(route);
+    .finally(() => { updateNav(); route(); });
 })();

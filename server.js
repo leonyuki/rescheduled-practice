@@ -65,11 +65,11 @@ function readBody(req) {
   });
 }
 
-function isAdmin(req) {
-  if (!ADMIN_PASSWORD) return true;
+function checkAdmin(req, password) {
+  if (!password) return true;
   const given = String(req.headers['x-admin-password'] || '');
   const a = Buffer.from(given);
-  const b = Buffer.from(ADMIN_PASSWORD);
+  const b = Buffer.from(password);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
@@ -92,7 +92,8 @@ function serveStatic(req, res, pathname) {
   });
 }
 
-function createApp(store, { serveFiles = true } = {}) {
+function createApp(store, { serveFiles = true, adminPassword = ADMIN_PASSWORD } = {}) {
+  const isAdmin = (req) => checkAdmin(req, adminPassword);
   return async function handler(req, res) {
     const url = new URL(req.url, 'http://localhost');
     const { pathname } = url;
@@ -114,7 +115,7 @@ function createApp(store, { serveFiles = true } = {}) {
       const seg = pathname.split('/').filter(Boolean).slice(1); // ['practices', id, ...]
 
       if (seg[0] === 'config' && method === 'GET') {
-        return sendJson(res, 200, { adminRequired: !!ADMIN_PASSWORD });
+        return sendJson(res, 200, { adminRequired: !!adminPassword });
       }
 
       if (seg[0] === 'admin' && seg[1] === 'check' && method === 'POST') {
@@ -165,6 +166,13 @@ function createApp(store, { serveFiles = true } = {}) {
 
       // /api/practices/:id/responses
       if (seg[2] === 'responses') {
+        // 回答の削除は管理者のみ（アーカイブ済みでも可）
+        if (seg.length === 4 && method === 'DELETE') {
+          if (!isAdmin(req)) return sendJson(res, 401, { error: '管理者パスワードが必要です' });
+          const p = await store.removeResponse(id, seg[3]);
+          if (!p) return sendJson(res, 404, { error: '回答が見つかりません' });
+          return sendJson(res, 200, { practice: p });
+        }
         if (practice.archived) {
           return sendJson(res, 409, { error: 'アーカイブ済みの練習には回答できません' });
         }
@@ -172,11 +180,6 @@ function createApp(store, { serveFiles = true } = {}) {
           const { value, errors } = validateResponse(await readBody(req));
           if (errors.length) return sendJson(res, 400, { error: errors.join('\n') });
           return sendJson(res, 200, { practice: await store.respond(id, value) });
-        }
-        if (seg.length === 4 && method === 'DELETE') {
-          const p = await store.removeResponse(id, seg[3]);
-          if (!p) return sendJson(res, 404, { error: '回答が見つかりません' });
-          return sendJson(res, 200, { practice: p });
         }
         return sendJson(res, 405, { error: 'Method Not Allowed' });
       }

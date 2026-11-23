@@ -74,6 +74,7 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   font-weight: 600;
 }
 .tabs a.active { background: var(--accent); color: var(--accent-text); }
+.tabs a[hidden] { display: none; }
 
 main { max-width: 820px; margin: 0 auto; padding: 16px; }
 
@@ -116,9 +117,10 @@ button, .button {
   border-radius: 8px;
   cursor: pointer;
 }
-button.secondary { background: transparent; color: var(--accent); }
-button.danger { background: transparent; border-color: var(--no); color: var(--no); }
-button.small { padding: 3px 10px; font-size: 0.85rem; }
+a.button { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.secondary { background: transparent; color: var(--accent); }
+button.danger, .button.danger { background: transparent; border-color: var(--no); color: var(--no); }
+button.small, .button.small { padding: 3px 10px; font-size: 0.85rem; }
 button:disabled { opacity: 0.5; cursor: default; }
 
 label { display: block; font-weight: 600; font-size: 0.9rem; margin-bottom: 10px; }
@@ -190,6 +192,26 @@ dialog {
 }
 dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
 dialog h2 { margin-top: 0; font-size: 1.15rem; }
+
+[hidden] { display: none !important; }
+
+.card-heading { margin: 0 0 8px; font-size: 1.05rem; }
+.detail-title { font-size: 1.3rem; }
+.section-heading { font-size: 1rem; color: var(--muted); margin: 20px 0 8px; }
+.top-gap { margin-top: 12px; }
+.narrow { max-width: 420px; margin-left: auto; margin-right: auto; }
+.admin-row .practice-title { display: block; color: var(--text); text-decoration: none; }
+.admin-row .practice-title:hover { color: var(--accent); }
+.warning {
+  background: var(--maybe-bg);
+  color: var(--maybe);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.site-footer { text-align: center; padding: 24px 16px 32px; font-size: 0.85rem; }
+.site-footer a { color: var(--muted); }
 
 .toast {
   position: fixed;

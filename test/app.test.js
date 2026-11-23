@@ -184,3 +184,41 @@ test('Vercel のように req.body が解析済みでも動く', async () => {
     server.close();
   }
 });
+
+test('管理者パスワード設定時は練習の追加・編集・削除・回答削除が管理者のみ', async () => {
+  const { createApp } = require('../server');
+  const server = http.createServer(createApp(fileStore(), { adminPassword: 'pw' }));
+  await new Promise((r) => server.listen(0, r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, p, body, pw) => {
+    const headers = {};
+    if (body) headers['Content-Type'] = 'application/json';
+    if (pw) headers['X-Admin-Password'] = pw;
+    const res = await fetch(base + p, { method, headers, body: body && JSON.stringify(body) });
+    return { status: res.status, body: await res.json() };
+  };
+  try {
+    assert.strictEqual((await call('GET', '/api/config')).body.adminRequired, true);
+    assert.strictEqual((await call('POST', '/api/admin/check', null, 'wrong')).status, 401);
+    assert.strictEqual((await call('POST', '/api/admin/check', null, 'pw')).status, 200);
+
+    const data = { title: 't', date: '2099-01-01' };
+    assert.strictEqual((await call('POST', '/api/practices', data)).status, 401);
+    const { body: { practice } } = await call('POST', '/api/practices', data, 'pw');
+    const pid = `/api/practices/${practice.id}`;
+
+    // メンバーは回答できる
+    const r = await call('POST', `${pid}/responses`, { name: 'A', status: 'yes' });
+    assert.strictEqual(r.status, 200);
+    const rid = r.body.practice.responses[0].id;
+
+    assert.strictEqual((await call('PUT', pid, data)).status, 401);
+    assert.strictEqual((await call('POST', `${pid}/archive`)).status, 401);
+    assert.strictEqual((await call('DELETE', `${pid}/responses/${rid}`)).status, 401);
+    assert.strictEqual((await call('DELETE', `${pid}/responses/${rid}`, null, 'pw')).status, 200);
+    assert.strictEqual((await call('DELETE', pid)).status, 401);
+    assert.strictEqual((await call('DELETE', pid, null, 'pw')).status, 200);
+  } finally {
+    server.close();
+  }
+});
