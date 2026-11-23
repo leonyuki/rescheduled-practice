@@ -222,3 +222,80 @@ test('管理者パスワード設定時は練習の追加・編集・削除・�
     server.close();
   }
 });
+
+test('日程調整: 作成・回答・集計・自動締切・決定で練習作成と回答引き継ぎ', async () => {
+  const { createApp } = require('../server');
+  const { PollStore, tally } = require('../lib/polls');
+  const store = fileStore();
+  const server = http.createServer(createApp(store, { adminPassword: 'pw' }));
+  await new Promise((r) => server.listen(0, r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, p, body, pw) => {
+    const headers = {};
+    if (body) headers['Content-Type'] = 'application/json';
+    if (pw) headers['X-Admin-Password'] = pw;
+    const res = await fetch(base + p, { method, headers, body: body && JSON.stringify(body) });
+    return { status: res.status, body: await res.json() };
+  };
+  try {
+    const input = {
+      title: '12月の練習日',
+      location: '体育館',
+      candidates: [
+        { date: '2099-12-12', startTime: '13:00', endTime: '15:00' },
+        { date: '2099-12-05', startTime: '18:00', endTime: '20:00' },
+      ],
+    };
+    assert.strictEqual((await call('POST', '/api/polls', input)).status, 401, '作成は管理者のみ');
+    assert.strictEqual((await call('POST', '/api/polls', { title: 'x', candidates: [] }, 'pw')).status, 400);
+    const created = await call('POST', '/api/polls', input, 'pw');
+    assert.strictEqual(created.status, 201);
+    const poll = created.body.poll;
+    assert.deepStrictEqual(poll.candidates.map((c) => c.date), ['2099-12-05', '2099-12-12'], '候補は日付順');
+    const [c1, c2] = poll.candidates.map((c) => c.id);
+    const pid = `/api/polls/${poll.id}`;
+
+    // 全候補に回答していないとエラー
+    assert.strictEqual((await call('POST', `${pid}/answers`, { name: 'A', answers: { [c1]: 'yes' } })).status, 400);
+    await call('POST', `${pid}/answers`, { name: 'A', answers: { [c1]: 'yes', [c2]: 'no' }, comment: '遅れるかも' });
+    await call('POST', `${pid}/answers`, { name: 'B', answers: { [c1]: 'maybe', [c2]: 'yes' } });
+    const r = await call('POST', `${pid}/answers`, { name: 'b', answers: { [c1]: 'no', [c2]: 'yes' } });
+    assert.strictEqual(r.body.poll.answers.length, 2, '同じ名前は上書き');
+    const t = tally(r.body.poll);
+    assert.deepStrictEqual(t.map((x) => [x.yes, x.maybe, x.no]), [[1, 0, 1], [1, 0, 1]]);
+
+    // 編集しても候補 ID と回答が保たれる
+    const edited = await call('PUT', pid, { ...input, title: '12月の練習日（改）', candidates: r.body.poll.candidates }, 'pw');
+    assert.strictEqual(edited.status, 200);
+    assert.deepStrictEqual(edited.body.poll.candidates.map((c) => c.id), [c1, c2]);
+    assert.strictEqual(edited.body.poll.answers[0].answers[c1], 'yes');
+
+    // 決定 → 練習が作成され、回答が引き継がれる
+    assert.strictEqual((await call('POST', `${pid}/decide`, { candidateId: c1 })).status, 401);
+    const d = await call('POST', `${pid}/decide`, { candidateId: c1 }, 'pw');
+    assert.strictEqual(d.status, 200);
+    assert.strictEqual(d.body.poll.status, 'decided');
+    assert.strictEqual(d.body.practice.date, '2099-12-05');
+    assert.strictEqual(d.body.practice.title, '12月の練習日（改）');
+    assert.deepStrictEqual(
+      d.body.practice.responses.map((x) => [x.name, x.status, x.comment]).sort(),
+      [['A', 'yes', '遅れるかも'], ['b', 'no', '']]
+    );
+    assert.strictEqual((await call('POST', `${pid}/decide`, { candidateId: c2 }, 'pw')).status, 409, '二重決定不可');
+    assert.strictEqual((await call('POST', `${pid}/answers`, { name: 'C', answers: { [c1]: 'yes', [c2]: 'yes' } })).status, 409);
+
+    // すべての候補日が過ぎたら自動で締め切り
+    const polls = new PollStore(store.backend, store);
+    const past = await polls.create({ title: '昔', location: '', note: '', candidates: [{ id: 'x', date: '2000-01-01', startTime: '', endTime: '' }] });
+    assert.strictEqual(await polls.closePast(), 1);
+    assert.strictEqual((await polls.get(past.id)).status, 'closed');
+    await polls.setOpen(past.id, true);
+    assert.strictEqual(await polls.closePast(), 0, '手動で再開したら自動では締め切らない');
+
+    assert.strictEqual((await call('DELETE', pid)).status, 401);
+    assert.strictEqual((await call('DELETE', pid, null, 'pw')).status, 200);
+    assert.strictEqual((await call('GET', pid)).status, 404);
+  } finally {
+    server.close();
+  }
+});

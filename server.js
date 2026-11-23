@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { Store, validatePractice, validateResponse } = require('./lib/store');
 const { backendFromEnv } = require('./lib/backends');
+const { PollStore, validatePoll, validatePollAnswer } = require('./lib/polls');
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
@@ -92,8 +93,84 @@ function serveStatic(req, res, pathname) {
   });
 }
 
-function createApp(store, { serveFiles = true, adminPassword = ADMIN_PASSWORD } = {}) {
+const UNAUTHORIZED = { error: '管理者パスワードが必要です' };
+
+/** /api/polls 以下（日程調整） */
+async function handlePolls(req, res, seg, polls, isAdmin) {
+  const method = req.method;
+
+  // /api/polls
+  if (seg.length === 1) {
+    if (method === 'GET') return sendJson(res, 200, { polls: await polls.list() });
+    if (method === 'POST') {
+      if (!isAdmin(req)) return sendJson(res, 401, UNAUTHORIZED);
+      const { value, errors } = validatePoll(await readBody(req));
+      if (errors.length) return sendJson(res, 400, { error: errors.join('\n') });
+      return sendJson(res, 201, { poll: await polls.create(value) });
+    }
+    return sendJson(res, 405, { error: 'Method Not Allowed' });
+  }
+
+  const id = seg[1];
+  const poll = await polls.get(id);
+  if (!poll) return sendJson(res, 404, { error: '日程調整が見つかりません' });
+
+  // /api/polls/:id
+  if (seg.length === 2) {
+    if (method === 'GET') return sendJson(res, 200, { poll });
+    if (method === 'PUT') {
+      if (!isAdmin(req)) return sendJson(res, 401, UNAUTHORIZED);
+      const { value, errors } = validatePoll(await readBody(req), poll);
+      if (errors.length) return sendJson(res, 400, { error: errors.join('\n') });
+      if (poll.status === 'decided') {
+        // 決定済みの候補日は消せない
+        const kept = value.candidates.some((c) => c.id === poll.decidedCandidateId);
+        if (!kept) return sendJson(res, 409, { error: '決定済みの候補日は削除できません' });
+      }
+      return sendJson(res, 200, { poll: await polls.update(id, value) });
+    }
+    if (method === 'DELETE') {
+      if (!isAdmin(req)) return sendJson(res, 401, UNAUTHORIZED);
+      await polls.remove(id);
+      return sendJson(res, 200, { ok: true });
+    }
+    return sendJson(res, 405, { error: 'Method Not Allowed' });
+  }
+
+  // /api/polls/:id/answers
+  if (seg[2] === 'answers') {
+    if (seg.length === 4 && method === 'DELETE') {
+      if (!isAdmin(req)) return sendJson(res, 401, UNAUTHORIZED);
+      const p = await polls.removeAnswer(id, seg[3]);
+      if (!p) return sendJson(res, 404, { error: '回答が見つかりません' });
+      return sendJson(res, 200, { poll: p });
+    }
+    if (seg.length === 3 && method === 'POST') {
+      if (poll.status !== 'open') return sendJson(res, 409, { error: 'この日程調整は締め切られています' });
+      const { value, errors } = validatePollAnswer(await readBody(req), poll);
+      if (errors.length) return sendJson(res, 400, { error: errors.join('\n') });
+      return sendJson(res, 200, { poll: await polls.answer(id, value) });
+    }
+    return sendJson(res, 405, { error: 'Method Not Allowed' });
+  }
+
+  // /api/polls/:id/close , /reopen , /decide
+  if (seg.length === 3 && method === 'POST' && ['close', 'reopen', 'decide'].includes(seg[2])) {
+    if (!isAdmin(req)) return sendJson(res, 401, UNAUTHORIZED);
+    if (poll.status === 'decided') return sendJson(res, 409, { error: 'すでに日程が決定しています' });
+    if (seg[2] === 'decide') {
+      const body = await readBody(req);
+      return sendJson(res, 200, await polls.decide(id, String(body.candidateId || '')));
+    }
+    return sendJson(res, 200, { poll: await polls.setOpen(id, seg[2] === 'reopen') });
+  }
+
+  return sendJson(res, 404, { error: 'Not Found' });
+}
+
+function createApp(store, { serveFiles = true, adminPassword = ADMIN_PASSWORD, polls } = {}) {
   const isAdmin = (req) => checkAdmin(req, adminPassword);
+  const pollStore = polls || new PollStore(store.backend, store);
   return async function handler(req, res) {
     const url = new URL(req.url, 'http://localhost');
     const { pathname } = url;
@@ -111,6 +188,7 @@ function createApp(store, { serveFiles = true, adminPassword = ADMIN_PASSWORD } 
     try {
       // アクセスのたびにも過去の練習をアーカイブ（タイマーとの二重化）
       await store.archivePast();
+      await pollStore.closePast();
 
       const seg = pathname.split('/').filter(Boolean).slice(1); // ['practices', id, ...]
 
@@ -121,6 +199,8 @@ function createApp(store, { serveFiles = true, adminPassword = ADMIN_PASSWORD } 
       if (seg[0] === 'admin' && seg[1] === 'check' && method === 'POST') {
         return sendJson(res, isAdmin(req) ? 200 : 401, { ok: isAdmin(req) });
       }
+
+      if (seg[0] === 'polls') return await handlePolls(req, res, seg, pollStore, isAdmin);
 
       if (seg[0] !== 'practices') return sendJson(res, 404, { error: 'Not Found' });
 
@@ -136,6 +216,7 @@ function createApp(store, { serveFiles = true, adminPassword = ADMIN_PASSWORD } 
           if (errors.length) return sendJson(res, 400, { error: errors.join('\n') });
           const p = await store.create(value);
           await store.archivePast();
+      await pollStore.closePast();
           return sendJson(res, 201, { practice: await store.get(p.id) });
         }
         return sendJson(res, 405, { error: 'Method Not Allowed' });
@@ -154,6 +235,7 @@ function createApp(store, { serveFiles = true, adminPassword = ADMIN_PASSWORD } 
           if (errors.length) return sendJson(res, 400, { error: errors.join('\n') });
           await store.update(id, value);
           await store.archivePast();
+      await pollStore.closePast();
           return sendJson(res, 200, { practice: await store.get(id) });
         }
         if (method === 'DELETE') {

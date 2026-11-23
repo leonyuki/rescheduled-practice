@@ -11,6 +11,7 @@
     <a href="#/" class="brand">練習出欠調整</a>
     <nav class="tabs">
       <a href="#/" data-tab="upcoming">予定の練習</a>
+      <a href="#/polls" data-tab="polls">日程調整</a>
       <a href="#/archive" data-tab="archive">アーカイブ</a>
       <a href="#/admin" data-tab="admin" hidden>管理</a>
     </nav>
@@ -33,6 +34,26 @@
       <label>メモ<textarea name="note" rows="3" maxlength="2000" placeholder="持ち物・連絡事項など"></textarea></label>
       <p class="hint">終了時刻（未入力なら開始時刻、どちらも無ければその日の終わり）を過ぎると自動でアーカイブされます。</p>
       <p class="error" id="practice-error" hidden></p>
+      <div class="actions">
+        <button type="button" class="secondary" data-close>キャンセル</button>
+        <button type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="poll-dialog">
+    <form id="poll-form" method="dialog">
+      <h2 id="poll-dialog-title">日程調整を作成</h2>
+      <label>タイトル<input name="title" required maxlength="100" placeholder="例: 12月の練習日"></label>
+      <label>場所<input name="location" maxlength="200" placeholder="例: 第2体育館"></label>
+      <label>メモ<textarea name="note" rows="2" maxlength="2000" placeholder="説明・連絡事項など"></textarea></label>
+      <fieldset class="candidates">
+        <legend>候補日</legend>
+        <div id="candidate-rows"></div>
+        <button type="button" class="secondary small" id="add-candidate">＋ 候補日を追加</button>
+      </fieldset>
+      <p class="hint">すべての候補日が過ぎると自動で締め切られます。日程を決定すると、その日の練習が作成され、○△× が出欠（参加・未定・不参加）として引き継がれます。</p>
+      <p class="error" id="poll-error" hidden></p>
       <div class="actions">
         <button type="button" class="secondary" data-close>キャンセル</button>
         <button type="submit">保存</button>
