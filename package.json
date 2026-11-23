@@ -1,0 +1,13 @@
+{
+  "name": "rescheduled-practice",
+  "version": "1.0.0",
+  "description": "練習の出欠調整サイト（過去の練習は自動でアーカイブ）",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>練習出欠調整</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a href="#/" class="brand">練習出欠調整</a>
+    <nav class="tabs">
+      <a href="#/" data-tab="upcoming">予定の練習</a>
+      <a href="#/archive" data-tab="archive">アーカイブ</a>
+    </nav>
+  </header>
+
+  <main id="app" aria-live="polite"></main>
+
+  <dialog id="practice-dialog">
+    <form id="practice-form" method="dialog">
+      <h2 id="practice-dialog-title">練習を追加</h2>
+      <label>タイトル<input name="title" required maxlength="100" placeholder="例: 全体練習"></label>
+      <label>日付<input name="date" type="date" required></label>
+      <div class="row">
+        <label>開始<input name="startTime" type="time"></label>
+        <label>終了<input name="endTime" type="time"></label>
+      </div>
+      <label>場所<input name="location" maxlength="200" placeholder="例: 第2体育館"></label>
+      <label>メモ<textarea name="note" rows="3" maxlength="2000" placeholder="持ち物・連絡事項など"></textarea></label>
+      <p class="hint">終了時刻（未入力なら開始時刻、どちらも無ければその日の終わり）を過ぎると自動でアーカイブされます。</p>
+      <p class="error" id="practice-error" hidden></p>
+      <div class="actions">
+        <button type="button" class="secondary" data-close>キャンセル</button>
+        <button type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>
