@@ -5,9 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { Store, validatePractice, validateResponse } = require('./lib/store');
+const { backendFromEnv } = require('./lib/backends');
 
 const PORT = Number(process.env.PORT) || 3000;
-const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'practices.json');
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const ARCHIVE_INTERVAL_MS = Number(process.env.ARCHIVE_INTERVAL_MS) || 60 * 1000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -30,6 +30,17 @@ function sendJson(res, status, body) {
 }
 
 function readBody(req) {
+  // Vercel では req.body に解析済みの本文が入っている
+  if (req.body !== undefined) {
+    const b = req.body;
+    if (b === null || b === '') return Promise.resolve({});
+    if (typeof b === 'object' && !Buffer.isBuffer(b)) return Promise.resolve(b);
+    try {
+      return Promise.resolve(JSON.parse(String(b)));
+    } catch {
+      return Promise.reject(Object.assign(new Error('JSONが不正です'), { status: 400 }));
+    }
+  }
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
@@ -81,13 +92,14 @@ function serveStatic(req, res, pathname) {
   });
 }
 
-function createApp(store) {
+function createApp(store, { serveFiles = true } = {}) {
   return async function handler(req, res) {
     const url = new URL(req.url, 'http://localhost');
     const { pathname } = url;
     const method = req.method;
 
     if (!pathname.startsWith('/api/')) {
+      if (!serveFiles) return sendJson(res, 404, { error: 'Not Found' });
       if (method !== 'GET' && method !== 'HEAD') {
         res.writeHead(405);
         return res.end();
@@ -97,7 +109,7 @@ function createApp(store) {
 
     try {
       // アクセスのたびにも過去の練習をアーカイブ（タイマーとの二重化）
-      store.archivePast();
+      await store.archivePast();
 
       const seg = pathname.split('/').filter(Boolean).slice(1); // ['practices', id, ...]
 
@@ -115,21 +127,21 @@ function createApp(store) {
       if (seg.length === 1) {
         if (method === 'GET') {
           const archived = url.searchParams.get('archived') === 'true';
-          return sendJson(res, 200, { practices: store.list({ archived }) });
+          return sendJson(res, 200, { practices: await store.list({ archived }) });
         }
         if (method === 'POST') {
           if (!isAdmin(req)) return sendJson(res, 401, { error: '管理者パスワードが必要です' });
           const { value, errors } = validatePractice(await readBody(req));
           if (errors.length) return sendJson(res, 400, { error: errors.join('\n') });
-          const p = store.create(value);
-          store.archivePast();
-          return sendJson(res, 201, { practice: store.get(p.id) });
+          const p = await store.create(value);
+          await store.archivePast();
+          return sendJson(res, 201, { practice: await store.get(p.id) });
         }
         return sendJson(res, 405, { error: 'Method Not Allowed' });
       }
 
       const id = seg[1];
-      const practice = store.get(id);
+      const practice = await store.get(id);
       if (!practice) return sendJson(res, 404, { error: '練習が見つかりません' });
 
       // /api/practices/:id
@@ -139,13 +151,13 @@ function createApp(store) {
           if (!isAdmin(req)) return sendJson(res, 401, { error: '管理者パスワードが必要です' });
           const { value, errors } = validatePractice(await readBody(req));
           if (errors.length) return sendJson(res, 400, { error: errors.join('\n') });
-          store.update(id, value);
-          store.archivePast();
-          return sendJson(res, 200, { practice: store.get(id) });
+          await store.update(id, value);
+          await store.archivePast();
+          return sendJson(res, 200, { practice: await store.get(id) });
         }
         if (method === 'DELETE') {
           if (!isAdmin(req)) return sendJson(res, 401, { error: '管理者パスワードが必要です' });
-          store.remove(id);
+          await store.remove(id);
           return sendJson(res, 200, { ok: true });
         }
         return sendJson(res, 405, { error: 'Method Not Allowed' });
@@ -159,10 +171,10 @@ function createApp(store) {
         if (seg.length === 3 && method === 'POST') {
           const { value, errors } = validateResponse(await readBody(req));
           if (errors.length) return sendJson(res, 400, { error: errors.join('\n') });
-          return sendJson(res, 200, { practice: store.respond(id, value) });
+          return sendJson(res, 200, { practice: await store.respond(id, value) });
         }
         if (seg.length === 4 && method === 'DELETE') {
-          const p = store.removeResponse(id, seg[3]);
+          const p = await store.removeResponse(id, seg[3]);
           if (!p) return sendJson(res, 404, { error: '回答が見つかりません' });
           return sendJson(res, 200, { practice: p });
         }
@@ -172,7 +184,7 @@ function createApp(store) {
       // /api/practices/:id/archive , /unarchive（手動操作）
       if ((seg[2] === 'archive' || seg[2] === 'unarchive') && method === 'POST') {
         if (!isAdmin(req)) return sendJson(res, 401, { error: '管理者パスワードが必要です' });
-        return sendJson(res, 200, { practice: store.setArchived(id, seg[2] === 'archive') });
+        return sendJson(res, 200, { practice: await store.setArchived(id, seg[2] === 'archive') });
       }
 
       return sendJson(res, 404, { error: 'Not Found' });
@@ -185,18 +197,17 @@ function createApp(store) {
 }
 
 function start() {
-  const store = new Store(DATA_FILE);
-  const n = store.archivePast();
-  if (n) console.log(`${n} 件の過去の練習をアーカイブしました`);
-
-  const timer = setInterval(() => {
+  const store = new Store(backendFromEnv());
+  const runArchive = async () => {
     try {
-      const count = store.archivePast();
+      const count = await store.archivePast();
       if (count) console.log(`${count} 件の過去の練習を自動アーカイブしました`);
     } catch (err) {
       console.error('自動アーカイブに失敗しました', err);
     }
-  }, ARCHIVE_INTERVAL_MS);
+  };
+  runArchive();
+  const timer = setInterval(runArchive, ARCHIVE_INTERVAL_MS);
   timer.unref();
 
   const server = http.createServer(createApp(store));

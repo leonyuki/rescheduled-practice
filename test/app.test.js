@@ -8,6 +8,7 @@ const path = require('path');
 const http = require('http');
 
 const { Store, nowLocalString, isPast, validatePractice } = require('../lib/store');
+const { FileBackend, RedisBackend } = require('../lib/backends');
 const { createApp } = require('../server');
 
 function tmpFile() {
@@ -36,37 +37,71 @@ test('validatePractice は不正な入力を弾く', () => {
   assert.deepStrictEqual(validatePractice({ title: 'a', date: '2026-01-01', startTime: '17:00', endTime: '18:00' }).errors, []);
 });
 
-test('archivePast は過去の練習だけを自動アーカイブし永続化する', () => {
+/** Upstash Redis REST API の最小限の偽物（HGETALL/HGET/HSET/HDEL/DEL） */
+async function fakeUpstash(token = 'secret') {
+  const db = new Map();
+  const run = ([cmd, key, ...args]) => {
+    const h = db.get(key) || new Map();
+    switch (cmd.toUpperCase()) {
+      case 'HGETALL': return [...h].flat();
+      case 'HGET': return h.get(args[0]) ?? null;
+      case 'HSET': {
+        let n = 0;
+        for (let i = 0; i < args.length; i += 2) { if (!h.has(args[i])) n++; h.set(args[i], String(args[i + 1])); }
+        db.set(key, h);
+        return n;
+      }
+      case 'HDEL': return args.reduce((n, f) => n + (h.delete(f) ? 1 : 0), 0);
+      case 'DEL': return db.delete(key) ? 1 : 0;
+      default: throw new Error('unsupported ' + cmd);
+    }
+  };
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      if (req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401); return res.end('unauthorized'); }
+      const cmds = JSON.parse(body);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(cmds.map((c) => { try { return { result: run(c) }; } catch (e) { return { error: e.message }; } })));
+    });
+  });
+  await new Promise((r) => server.listen(0, r));
+  return { server, url: `http://127.0.0.1:${server.address().port}`, token };
+}
+
+const fileStore = (file = tmpFile()) => new Store(new FileBackend(file));
+
+test('archivePast は過去の練習だけを自動アーカイブし永続化する', async () => {
   const file = tmpFile();
-  const store = new Store(file);
-  const past = store.create({ title: '過去', date: '2026-05-01', startTime: '10:00', endTime: '12:00', location: '', note: '' });
-  const future = store.create({ title: '未来', date: '2026-05-20', startTime: '10:00', endTime: '12:00', location: '', note: '' });
+  const store = fileStore(file);
+  const past = await store.create({ title: '過去', date: '2026-05-01', startTime: '10:00', endTime: '12:00', location: '', note: '' });
+  const future = await store.create({ title: '未来', date: '2026-05-20', startTime: '10:00', endTime: '12:00', location: '', note: '' });
 
-  assert.strictEqual(store.archivePast('2026-05-10T00:00'), 1);
-  assert.strictEqual(store.get(past.id).archived, true);
-  assert.strictEqual(store.get(past.id).autoArchived, true);
-  assert.strictEqual(store.get(future.id).archived, false);
-  assert.strictEqual(store.archivePast('2026-05-10T00:00'), 0, '二重にアーカイブしない');
+  assert.strictEqual(await store.archivePast('2026-05-10T00:00'), 1);
+  assert.strictEqual((await store.get(past.id)).archived, true);
+  assert.strictEqual((await store.get(past.id)).autoArchived, true);
+  assert.strictEqual((await store.get(future.id)).archived, false);
+  assert.strictEqual(await store.archivePast('2026-05-10T00:00'), 0, '二重にアーカイブしない');
 
-  const reloaded = new Store(file);
-  assert.deepStrictEqual(reloaded.list({ archived: true }).map((p) => p.id), [past.id]);
-  assert.deepStrictEqual(reloaded.list({ archived: false }).map((p) => p.id), [future.id]);
+  const reloaded = fileStore(file);
+  assert.deepStrictEqual((await reloaded.list({ archived: true })).map((p) => p.id), [past.id]);
+  assert.deepStrictEqual((await reloaded.list({ archived: false })).map((p) => p.id), [future.id]);
 });
 
-test('respond は同じ名前の回答を上書きする', () => {
-  const store = new Store(tmpFile());
-  const p = store.create({ title: 't', date: '2099-01-01', startTime: '', endTime: '', location: '', note: '' });
-  store.respond(p.id, { name: 'Taro', status: 'yes', comment: '' });
-  store.respond(p.id, { name: 'taro', status: 'no', comment: '風邪' });
-  store.respond(p.id, { name: 'Hanako', status: 'maybe', comment: '' });
-  const got = store.get(p.id);
+test('respond は同じ名前の回答を上書きする', async () => {
+  const store = fileStore();
+  const p = await store.create({ title: 't', date: '2099-01-01', startTime: '', endTime: '', location: '', note: '' });
+  await store.respond(p.id, { name: 'Taro', status: 'yes', comment: '' });
+  await store.respond(p.id, { name: 'taro', status: 'no', comment: '風邪' });
+  await store.respond(p.id, { name: 'Hanako', status: 'maybe', comment: '' });
+  const got = await store.get(p.id);
   assert.strictEqual(got.responses.length, 2);
   assert.strictEqual(got.responses[0].status, 'no');
   assert.strictEqual(got.responses[0].comment, '風邪');
 });
 
-test('HTTP API: 作成・回答・過去日付は自動アーカイブ・アーカイブ後は回答不可', async () => {
-  const store = new Store(tmpFile());
+async function httpScenario(store) {
   const server = http.createServer(createApp(store));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -112,6 +147,39 @@ test('HTTP API: 作成・回答・過去日付は自動アーカイブ・アー�
     const del = await call('DELETE', `/api/practices/${future.body.practice.id}`);
     assert.strictEqual(del.status, 200);
     assert.strictEqual((await call('GET', `/api/practices/${future.body.practice.id}`)).status, 404);
+  } finally {
+    server.close();
+  }
+}
+
+test('HTTP API（ファイル保存）: 作成・回答・自動アーカイブ・アーカイブ後は回答不可', async () => {
+  await httpScenario(fileStore());
+});
+
+test('HTTP API（Upstash Redis 保存）: 同じシナリオが動く', async () => {
+  const up = await fakeUpstash();
+  try {
+    await httpScenario(new Store(new RedisBackend(up.url, up.token)));
+  } finally {
+    up.server.close();
+  }
+});
+
+test('Vercel のように req.body が解析済みでも動く', async () => {
+  const { createApp } = require('../server');
+  const handler = createApp(fileStore(), { serveFiles: false });
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => { req.body = raw ? JSON.parse(raw) : undefined; handler(req, res); });
+  });
+  await new Promise((r) => server.listen(0, r));
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/api/practices`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'x', date: '2099-01-01' }),
+    });
+    assert.strictEqual(res.status, 201);
   } finally {
     server.close();
   }
