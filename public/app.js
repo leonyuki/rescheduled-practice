@@ -126,12 +126,12 @@
     const order = { yes: 0, maybe: 1, no: 2 };
     const rows = [...p.responses]
       .sort((a, b) => order[a.status] - order[b.status] || a.name.localeCompare(b.name, 'ja'))
-      .map((r) => `<tr>
-        <td>${esc(r.name)}</td>
-        <td><span class="pill ${r.status}">${STATUS_LABEL[r.status]}</span></td>
-        <td class="comment">${esc(r.comment)}</td>
-        ${p.archived ? '' : `<td><button class="small danger" data-del-response="${esc(r.id)}" aria-label="${esc(r.name)}の回答を削除">削除</button></td>`}
-      </tr>`)
+      .map((r) => `<li class="response">
+        <span class="pill ${r.status}">${STATUS_LABEL[r.status]}</span>
+        <span class="response-name">${esc(r.name)}</span>
+        ${p.archived ? '' : `<button class="small danger" data-del-response="${esc(r.id)}" aria-label="${esc(r.name)}の回答を削除">削除</button>`}
+        ${r.comment ? `<p class="response-comment">${esc(r.comment)}</p>` : ''}
+      </li>`)
       .join('');
 
     const responseForm = p.archived
@@ -167,7 +167,7 @@
       <div class="card">
         <h2 style="margin-top:0;font-size:1.05rem">回答一覧（${p.responses.length}人）</h2>
         ${p.responses.length
-          ? `<table class="responses"><thead><tr><th>名前</th><th>出欠</th><th>コメント</th>${p.archived ? '' : '<th></th>'}</tr></thead><tbody>${rows}</tbody></table>`
+          ? `<ul class="responses">${rows}</ul>`
           : '<p class="hint">まだ回答がありません</p>'}
       </div>`;
 
